@@ -142,21 +142,30 @@ function makeForms(rgba) {
 function filter(samples, bpp, kind) {
   const stride = W * bpp, raw = new Uint8Array(H * (stride + 1));
   const trials = Array.from({ length: 5 }, () => new Uint8Array(stride));
+  const seen = kind === 6 ? new Uint32Array(65536) : null;
+  let stamp = 0;
   for (let y = 0; y < H; y++) {
     const base = y * stride, outAt = y * (stride + 1), prev = base - stride;
     let chosen = kind;
-    if (kind === 5) {
+    if (kind === 5 || kind === 6) {
       let best = Infinity;
       for (let t = 0; t < 5; t++) {
-        const row = trials[t]; let sum = 0;
+        const row = trials[t]; let sum = 0, pairs = 0;
+        const rowStamp = kind === 6 ? ++stamp : 0;
         for (let i = 0; i < stride; i++) {
           const a = i >= bpp ? samples[base + i - bpp] : 0;
           const b = y ? samples[prev + i] : 0;
           const c = y && i >= bpp ? samples[prev + i - bpp] : 0;
           const pred = t === 0 ? 0 : t === 1 ? a : t === 2 ? b : t === 3 ? ((a + b) >> 1) : paeth(a, b, c);
-          const v = (samples[base + i] - pred) & 255; row[i] = v; sum += v < 128 ? v : 256 - v;
+          const v = (samples[base + i] - pred) & 255; row[i] = v;
+          if (kind === 5) sum += v < 128 ? v : 256 - v;
+          else if (i > 0) {
+            const pair = (row[i - 1] << 8) | v;
+            if (seen[pair] !== rowStamp) { seen[pair] = rowStamp; pairs++; }
+          }
         }
-        if (sum < best) { best = sum; chosen = t; }
+        const cost = kind === 5 ? sum : pairs;
+        if (cost < best) { best = cost; chosen = t; }
       }
       raw[outAt] = chosen; raw.set(trials[chosen], outAt + 1);
     } else {
@@ -189,7 +198,7 @@ function png(form, compressed) {
 function encode(rgba) {
   let best = null;
   for (const form of makeForms(rgba)) {
-    const filters = form.ct === 3 ? [0, 2, 5] : [0, 1, 2, 3, 4, 5];
+    const filters = form.ct === 3 ? [0, 2, 5, 6] : [0, 1, 2, 3, 4, 5, 6];
     for (const f of filters) {
       const raw = filter(form.samples, form.bpp, f);
       for (const level of [6, 9]) {
@@ -197,7 +206,7 @@ function encode(rgba) {
         const bytes = png(form, z);
         if (best === null || bytes.length < best.length) best = bytes;
       }
-      if (f === 5 || f === 2) {
+      if (f === 5 || f === 6 || f === 2) {
         for (const strategy of [Z.Z_FILTERED, Z.Z_RLE]) {
           const z = deflateSync(raw, { level: 9, strategy });
           const bytes = png(form, z);
